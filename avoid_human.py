@@ -1,10 +1,7 @@
-# ===============================
-# SLAM型配送 人回避 検証コード
-# ===============================
-import random
-import heapq
-import time
-import copy
+# ==========================================
+# SLAM型配送：CNN回転＋人回避【最終安定版】
+# ==========================================
+import random, heapq, time, copy
 
 # ===== マップ =====
 RAW_MAP = [
@@ -30,19 +27,20 @@ H, W = 16, 16
 
 # ===== 方向 =====
 DIRS = {
-    0: (-1, 0),  # 北
-    1: (0, -1),  # 西
-    2: (1, 0),   # 南
-    3: (0, 1),   # 東
+    0:(-1,0),  # 北
+    1:(0,-1),  # 西
+    2:(1,0),   # 南
+    3:(0,1),   # 東
 }
-DIR_CHAR = {0:"▲",1:"◀",2:"▼",3:"▶"}
+ARROW={0:"▲",1:"◀",2:"▼",3:"▶"}
 
-CENTER = 2
-CNN = 5
+# ===== CNN =====
+CNN=5
+CENTER=2
+FRONT=(CENTER-1, CENTER)
 
-# ===== ユーティリティ =====
-def manhattan(a,b):
-    return abs(a[0]-b[0])+abs(a[1]-b[1])
+# ===== util =====
+def manhattan(a,b): return abs(a[0]-b[0])+abs(a[1]-b[1])
 
 def find(ch):
     for r in range(H):
@@ -50,54 +48,39 @@ def find(ch):
             if grid[r][c]==ch:
                 return (r,c)
 
-# ===== 人配置（仕様どおり）=====
+# ===== 人配置（マンハッタン距離2）=====
 def place_people(n=6):
-    cells=[]
-    for r in range(H):
-        for c in range(W):
-            if grid[r][c] in "・＃":
-                cells.append((r,c))
-
-    banned = set()
-    fixed = "ＡＢＣ受◯◎"
-    for r in range(H):
-        for c in range(W):
-            if grid[r][c] in fixed:
-                banned.add((r,c))
-
-    people=[]
-    random.shuffle(cells)
-    for r,c in cells:
+    cand=[(r,c) for r in range(H) for c in range(W) if grid[r][c] in "・＃"]
+    banned=set(find(x) for x in "ＡＢＣ受" if find(x))
+    random.shuffle(cand)
+    for r,c in cand:
         if any(manhattan((r,c),b)<=2 for b in banned):
             continue
-        people.append((r,c))
+        grid[r][c]="◯"
         banned.add((r,c))
-        if len(people)>=n:
+        if sum(1 for r in range(H) for c in range(W) if grid[r][c]=="◯")>=n:
             break
 
-    for r,c in people:
-        grid[r][c]="◯"
-
-# ===== CNN =====
+# ===== CNN（回転対応）=====
 def get_cnn(pos,dir):
     cnn=[[" "]*CNN for _ in range(CNN)]
     for y in range(CNN):
         for x in range(CNN):
-            wy = pos[0]+(y-CENTER)
-            wx = pos[1]+(x-CENTER)
-            if 0<=wy<H and 0<=wx<W:
-                cnn[y][x]=grid[wy][wx]
+            dy,dx=y-CENTER,x-CENTER
+            if dir==0: ry,rx=dy,dx
+            elif dir==1: ry,rx=dx,-dy
+            elif dir==2: ry,rx=-dy,-dx
+            else: ry,rx=-dx,dy
+            r,c=pos[0]+ry,pos[1]+rx
+            if 0<=r<H and 0<=c<W:
+                cnn[y][x]=grid[r][c]
     return cnn
-
-def front_index(dir):
-    dy,dx=DIRS[dir]
-    return CENTER+dy, CENTER+dx
 
 # ===== A* =====
 def astar(start,goal,map_):
     pq=[(0,start)]
-    prev={}
     cost={start:0}
+    prev={}
     while pq:
         _,cur=heapq.heappop(pq)
         if cur==goal: break
@@ -108,8 +91,7 @@ def astar(start,goal,map_):
             ncst=cost[cur]+1
             if (nr,nc) not in cost or ncst<cost[(nr,nc)]:
                 cost[(nr,nc)]=ncst
-                pr=ncst+manhattan((nr,nc),goal)
-                heapq.heappush(pq,(pr,(nr,nc)))
+                heapq.heappush(pq,(ncst+manhattan((nr,nc),goal),(nr,nc)))
                 prev[(nr,nc)]=cur
     if goal not in prev: return []
     path=[goal]
@@ -122,37 +104,46 @@ grid=[list(r) for r in RAW_MAP]
 place_people()
 
 agent=find("受")
-dir=0
 goal=find("Ａ")
+dir=0
+mode="ROTATE"
 
-# ===== stepループ =====
-for step in range(60):
+# ===== step loop =====
+for step in range(80):
     vis=copy.deepcopy(grid)
-    vis[agent[0]][agent[1]]=DIR_CHAR[dir]
-    print("\nSTEP",step)
+    vis[agent[0]][agent[1]]=ARROW[dir]
+    print(f"\nSTEP {step} MODE:{mode}")
     for r in vis: print("".join(r))
-
-    cnn=get_cnn(agent,dir)
-    fy,fx=front_index(dir)
-
-    # 人検知
-    if cnn[fy][fx]=="◯":
-        wy=agent[0]+(fy-CENTER)
-        wx=agent[1]+(fx-CENTER)
-        grid[wy][wx]="◎"
-        print("👀 人検知 → 停止 & A*再計算")
-        time.sleep(0.5)
-        continue
 
     path=astar(agent,goal,grid)
     if len(path)<2:
-        print("❌ 進路なし")
+        print("❌ 経路なし")
         break
 
     nr,nc=path[1]
     dr,dc=nr-agent[0],nc-agent[1]
-    for k,v in DIRS.items():
-        if v==(dr,dc):
-            dir=k
-    agent=(nr,nc)
-    time.sleep(0.3)
+    next_dir=[k for k,v in DIRS.items() if v==(dr,dc)][0]
+
+    # ===== 回転 =====
+    if mode=="ROTATE":
+        if dir!=next_dir:
+            dir=next_dir
+            print("🔄 回転")
+            mode="MOVE"
+            time.sleep(0.3)
+            continue
+        mode="MOVE"
+
+    # ===== 前進 step（唯一の衝突判定）=====
+    if mode=="MOVE":
+        # ★ 実際に進むマスだけを見る（唯一正しい）
+        if grid[nr][nc] == "◯":
+            grid[nr][nc] = "◎"
+            print("👀 次マスに人 → 停止 & 再探索")
+            time.sleep(0.4)
+            continue
+
+        agent = (nr, nc)
+        print("➡ 前進")
+        mode = "ROTATE"
+        time.sleep(0.3)
